@@ -11,9 +11,9 @@ from recommend import related_videos_youtube_api, fallback_search_links
 
 load_dotenv()
 
-st.set_page_config(page_title="Chat with YouTube Video", page_icon=":tv:", layout="centered")
+st.set_page_config(page_title="VeeChat", page_icon=":tv:", layout="centered")
 
-st.title("Chat with YouTube Video")
+st.title("VeeChat")
 st.caption("Paste a YouTube link -> load transcript -> chat using RAG -> get related video recommendations")
 
 # -------------------------

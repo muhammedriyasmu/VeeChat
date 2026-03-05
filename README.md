@@ -1,26 +1,129 @@
-# 📺 Chat with YouTube Videos (RAG + Recommendations)
+🚀 VeeChat – Chat with YouTube Videos using RAG
 
-An AI-powered Streamlit application that lets you **chat with YouTube videos** using
-**Retrieval-Augmented Generation (RAG)** and also **recommends related videos** based on
-the video transcript.
+VeeChat is an AI-powered application that allows users to ask questions about YouTube videos using natural language.
+The system uses Retrieval-Augmented Generation (RAG) to extract knowledge from video transcripts and generate accurate responses with a Large Language Model.
 
-This project extracts YouTube transcripts, stores them in a vector database (Chroma),
-and allows users to ask contextual questions with accurate, grounded answers.
+✨ Features
 
----
+📺 YouTube Video Ingestion – Paste a YouTube URL
 
-## ✨ Features
+📝 Automatic Transcript Extraction
 
-- ✅ Chat with any YouTube video that has captions
-- ✅ Uses **RAG (Retrieval-Augmented Generation)** for accurate answers
-- ✅ Stores transcripts in **Chroma Vector DB**
-- ✅ **Related video recommendations**
-  - With YouTube Data API (best results)
-  - Fallback keyword-based YouTube search (no API key needed)
-- ✅ Clean Streamlit UI
-- ✅ Robust error handling & user feedback
-- ✅ Windows-friendly setup
+🔍 Semantic Search using Vector Embeddings
 
----
+🤖 LLM-based Question Answering
 
-## 🧠 Architecture (High Level)
+🎥 Video Recommendation System
+
+⚡ Groq LLM Integration for fast responses
+
+💬 Simple chat interface
+
+🧠 How It Works
+
+The system follows a RAG (Retrieval-Augmented Generation) pipeline:
+
+User provides a YouTube video URL
+
+The system extracts the transcript
+
+Transcript is split into smaller chunks
+
+Chunks are converted into vector embeddings
+
+Relevant chunks are retrieved using semantic similarity
+
+Retrieved context is passed to the LLM
+
+The model generates a context-aware answer
+
+This approach helps reduce hallucinations and improves answer accuracy by grounding the model with real data.
+
+🛠 Tech Stack
+
+Python
+
+Streamlit – User Interface
+
+FastAPI – Backend API
+
+Embedchain – RAG pipeline
+
+Groq LLM
+
+YouTube Transcript API
+
+Vector Embeddings
+
+📂 Project Structure
+VeeChat
+│
+├── backend
+│   ├── main.py
+│   ├── rag.py
+│   └── youtube.py
+│
+├── frontend
+│   └── streamlit_app.py
+│
+├── requirements.txt
+├── README.md
+└── .env
+⚙️ Installation
+1️⃣ Clone the repository
+git clone https://github.com/muhammedriyasmu/VeeChat.git
+cd VeeChat
+2️⃣ Create a virtual environment
+python -m venv venv
+
+Activate it:
+
+Windows
+
+venv\Scripts\activate
+
+Mac/Linux
+
+source venv/bin/activate
+3️⃣ Install dependencies
+pip install -r requirements.txt
+4️⃣ Add API Keys
+
+Create a .env file in the root folder.
+
+GROQ_API_KEY=your_groq_api_key
+OPENAI_API_KEY=your_openai_key
+▶️ Run the Application
+
+Start the backend:
+
+python main.py
+
+Run the frontend:
+
+streamlit run streamlit_app.py
+
+Open the app:
+
+http://localhost:8501
+🎓 Learning Outcomes
+
+Through this project, I explored:
+
+Retrieval-Augmented Generation (RAG)
+
+Embeddings & semantic search
+
+Prompt engineering
+
+LLM integration with real-world data
+
+Debugging AI system pipelines
+
+👨‍💻 Author
+
+Muhammed Riyas M.U
+MSc Computer Science – University of Calicut
+
+🌐 Portfolio
+https://muhammedriyasmu.github.io/
