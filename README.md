@@ -1,9 +1,11 @@
 🚀 VeeChat – Chat with YouTube Videos using RAG
+---------------------------------------------
 
 VeeChat is an AI-powered application that allows users to ask questions about YouTube videos using natural language.
 The system uses Retrieval-Augmented Generation (RAG) to extract knowledge from video transcripts and generate accurate responses with a Large Language Model.
 
 ✨ Features
+----------------
 
 📺 YouTube Video Ingestion – Paste a YouTube URL
 
@@ -19,7 +21,9 @@ The system uses Retrieval-Augmented Generation (RAG) to extract knowledge from v
 
 💬 Simple chat interface
 
+
 🧠 How It Works
+------------------------
 
 The system follows a RAG (Retrieval-Augmented Generation) pipeline:
 
@@ -40,12 +44,11 @@ The model generates a context-aware answer
 This approach helps reduce hallucinations and improves answer accuracy by grounding the model with real data.
 
 🛠 Tech Stack
+---------------------
 
 Python
 
 Streamlit – User Interface
-
-FastAPI – Backend API
 
 Embedchain – RAG pipeline
 
@@ -55,25 +58,16 @@ YouTube Transcript API
 
 Vector Embeddings
 
-📂 Project Structure
-VeeChat
-│
-├── backend
-│   ├── main.py
-│   ├── rag.py
-│   └── youtube.py
-│
-├── frontend
-│   └── streamlit_app.py
-│
-├── requirements.txt
-├── README.md
-└── .env
 ⚙️ Installation
+------------------
 1️⃣ Clone the repository
+
 git clone https://github.com/muhammedriyasmu/VeeChat.git
+
 cd VeeChat
+
 2️⃣ Create a virtual environment
+
 python -m venv venv
 
 Activate it:
@@ -85,28 +79,28 @@ venv\Scripts\activate
 Mac/Linux
 
 source venv/bin/activate
+
 3️⃣ Install dependencies
+
 pip install -r requirements.txt
+
 4️⃣ Add API Keys
 
 Create a .env file in the root folder.
 
 GROQ_API_KEY=your_groq_api_key
-OPENAI_API_KEY=your_openai_key
+
 ▶️ Run the Application
-
-Start the backend:
-
-python main.py
-
-Run the frontend:
 
 streamlit run streamlit_app.py
 
 Open the app:
 
 http://localhost:8501
+
+
 🎓 Learning Outcomes
+----------------------
 
 Through this project, I explored:
 
@@ -120,10 +114,13 @@ LLM integration with real-world data
 
 Debugging AI system pipelines
 
+
 👨‍💻 Author
+-----------------
 
 Muhammed Riyas M.U
-MSc Computer Science – University of Calicut
 
-🌐 Portfolio
+MSc Computer Science – MES Keveeyam College Valanchery
+
+🌐 Portfolio  
 https://muhammedriyasmu.github.io/
