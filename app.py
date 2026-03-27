@@ -1,5 +1,7 @@
 import os
 import tempfile
+from datetime import datetime
+from textwrap import wrap
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -37,16 +39,25 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "related_videos" not in st.session_state:
     st.session_state.related_videos = []
+if "chat_summary_text" not in st.session_state:
+    st.session_state.chat_summary_text = None
+if "chat_summary_pdf" not in st.session_state:
+    st.session_state.chat_summary_pdf = None
+if "study_notes_text" not in st.session_state:
+    st.session_state.study_notes_text = None
+if "study_notes_pdf" not in st.session_state:
+    st.session_state.study_notes_pdf = None
 
 
 with st.expander("How it works", expanded=False):
     st.markdown(
         """
-1) Enter your Groq API key
-2) Paste a YouTube URL (video must have captions)
-3) App fetches transcript and stores it in Chroma (RAG)
-4) Ask questions
-5) Related videos are recommended from transcript keywords (or YouTube API if provided)
+1) Paste a YouTube URL (video must have captions)
+2) App fetches the transcript and builds transcript chunks for retrieval
+3) Ask questions and get Groq answers grounded in the transcript
+4) Generate study notes from the transcript for revision
+5) Download a PDF summary of the chat session if needed
+6) Related videos are recommended from transcript keywords or the YouTube API
 
 **Tip:** If a video has no captions, transcript will fail (this is normal).
         """
@@ -55,12 +66,7 @@ with st.expander("How it works", expanded=False):
 default_groq = os.getenv("GROQ_API_KEY", "")
 default_yt = os.getenv("YOUTUBE_API_KEY", "")
 
-groq_key = st.text_input("Groq API Key", type="password", value=default_groq)
-youtube_api_key = st.text_input(
-    "YouTube API Key (optional, for better related videos)",
-    type="password",
-    value=default_yt,
-)
+youtube_api_key = default_yt
 
 st.divider()
 
@@ -82,21 +88,25 @@ if clear_btn:
     st.session_state.word_count = 0
     st.session_state.chat_history = []
     st.session_state.related_videos = []
+    st.session_state.chat_summary_text = None
+    st.session_state.chat_summary_pdf = None
+    st.session_state.study_notes_text = None
+    st.session_state.study_notes_pdf = None
     st.rerun()
 
 
 def _build_new_bot() -> None:
     # Some downstream libs read API keys only from env vars.
-    os.environ["GROQ_API_KEY"] = groq_key.strip()
+    os.environ["GROQ_API_KEY"] = default_groq.strip()
     db_path = tempfile.mkdtemp()
     st.session_state.db_path = db_path
-    st.session_state.app = make_bot(db_path, groq_key)
+    st.session_state.app = make_bot(db_path, default_groq)
 
 
 def _precheck_groq() -> tuple[bool, str]:
-    key = groq_key.strip()
+    key = default_groq.strip()
     if not key:
-        return False, "Please enter your Groq API key first."
+        return False, "Please add `GROQ_API_KEY` to your project `.env` file first."
 
     try:
         client = OpenAI(api_key=key, base_url="https://api.groq.com/openai/v1")
@@ -141,6 +151,231 @@ def _compute_related_videos() -> None:
         st.session_state.related_videos = fallback_search_links(text, url)
 
 
+def _fallback_chat_summary() -> str:
+    history = st.session_state.chat_history
+    video_url_value = st.session_state.current_video_url or "Not available"
+    video_id_value = st.session_state.current_video_id or "Unknown"
+
+    lines = [
+        "VeeChat Session Summary",
+        f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Video ID: {video_id_value}",
+        f"Video URL: {video_url_value}",
+        f"Questions answered: {len(history)}",
+        "",
+        "Discussion highlights:",
+    ]
+
+    for idx, (question, answer) in enumerate(history, 1):
+        compact_answer = " ".join((answer or "").split())
+        if len(compact_answer) > 280:
+            compact_answer = compact_answer[:277] + "..."
+        lines.append(f"{idx}. Question: {question}")
+        lines.append(f"   Answer: {compact_answer}")
+
+    lines.append("")
+    lines.append("Note: This summary used a local fallback because the AI summary request was unavailable.")
+    return "\n".join(lines)
+
+
+def _generate_chat_summary() -> str:
+    history = st.session_state.chat_history
+    if not history:
+        raise ValueError("No chat history available to summarize.")
+
+    transcript_words = st.session_state.word_count
+    history_text = "\n\n".join(
+        f"Question {idx}: {question}\nAnswer {idx}: {answer}"
+        for idx, (question, answer) in enumerate(history, 1)
+    )
+
+    prompt = (
+        "Create a concise session summary for a user who chatted with a YouTube video.\n"
+        "Return plain text only.\n"
+        "Use these sections exactly:\n"
+        "Title\n"
+        "Video Details\n"
+        "Questions Covered\n"
+        "Key Takeaways\n"
+        "Suggested Next Questions\n\n"
+        f"Video URL: {st.session_state.current_video_url}\n"
+        f"Video ID: {st.session_state.current_video_id}\n"
+        f"Transcript word count: {transcript_words}\n"
+        f"Chat turns: {len(history)}\n\n"
+        f"Chat transcript:\n{history_text}"
+    )
+
+    try:
+        response = st.session_state.app.client.chat.completions.create(
+            model=st.session_state.app.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You write clean, useful summaries of chat sessions. Be accurate and concise.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+        )
+        content = (response.choices[0].message.content or "").strip()
+        return content or _fallback_chat_summary()
+    except Exception:
+        return _fallback_chat_summary()
+
+
+def _fallback_study_notes() -> str:
+    transcript_text = (st.session_state.transcript_text or "").strip()
+    compact_text = " ".join(transcript_text.split())
+    excerpt = compact_text[:1800]
+    if len(compact_text) > len(excerpt):
+        excerpt += "..."
+
+    return "\n".join(
+        [
+            "Study Notes",
+            f"Video ID: {st.session_state.current_video_id or 'Unknown'}",
+            f"Video URL: {st.session_state.current_video_url or 'Not available'}",
+            "",
+            "Overview",
+            "These notes are based on the loaded transcript.",
+            "",
+            "Key Content Excerpt",
+            excerpt or "Transcript excerpt not available.",
+            "",
+            "Review Prompts",
+            "- What are the main ideas explained in this video?",
+            "- Which examples or steps are most important to remember?",
+            "- What would you want to ask next for clarification?",
+        ]
+    )
+
+
+def _generate_study_notes() -> str:
+    transcript_text = (st.session_state.transcript_text or "").strip()
+    if not transcript_text:
+        raise ValueError("No transcript available for study notes.")
+
+    transcript_excerpt = transcript_text[:12000]
+    prompt = (
+        "Create clear study notes from the transcript below.\n"
+        "Return plain text only.\n"
+        "Use these sections exactly:\n"
+        "Title\n"
+        "Overview\n"
+        "Key Concepts\n"
+        "Important Details\n"
+        "Quick Review Questions\n"
+        "Revision Summary\n\n"
+        "Requirements:\n"
+        "- Base the notes only on the transcript.\n"
+        "- Keep the notes accurate and easy to revise.\n"
+        "- Use short bullets where helpful.\n"
+        "- Do not invent facts that are not supported by the transcript.\n\n"
+        f"Transcript:\n{transcript_excerpt}"
+    )
+
+    try:
+        response = st.session_state.app.client.chat.completions.create(
+            model=st.session_state.app.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You create accurate study notes from transcript content. "
+                        "Stay grounded in the source and organize the notes clearly."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+        )
+        content = (response.choices[0].message.content or "").strip()
+        return content or _fallback_study_notes()
+    except Exception:
+        return _fallback_study_notes()
+
+
+def _pdf_escape(text: str) -> str:
+    sanitized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    sanitized = sanitized.encode("latin-1", "replace").decode("latin-1")
+    return sanitized.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _wrap_pdf_lines(text: str, width: int = 88) -> list[str]:
+    wrapped_lines: list[str] = []
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            wrapped_lines.append("")
+            continue
+        chunks = wrap(line, width=width, break_long_words=True, break_on_hyphens=False)
+        wrapped_lines.extend(chunks or [""])
+    return wrapped_lines or [""]
+
+
+def _build_pdf_bytes(summary_text: str) -> bytes:
+    base_lines = _wrap_pdf_lines(summary_text)
+    lines_per_page = 44
+    page_chunks = [
+        base_lines[i:i + lines_per_page] for i in range(0, len(base_lines), lines_per_page)
+    ] or [[""]]
+
+    objects: list[bytes] = []
+
+    def _add_object(data: str | bytes) -> int:
+        blob = data.encode("latin-1") if isinstance(data, str) else data
+        objects.append(blob)
+        return len(objects)
+
+    catalog_id = _add_object("<< /Type /Catalog /Pages 2 0 R >>")
+    pages_id = _add_object("<< /Type /Pages /Count 0 /Kids [] >>")
+    font_id = _add_object("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+    page_ids: list[int] = []
+    for chunk in page_chunks:
+        text_ops = ["BT", "/F1 11 Tf", "50 792 Td", "14 TL"]
+        for index, line in enumerate(chunk):
+            escaped = _pdf_escape(line)
+            if index > 0:
+                text_ops.append("T*")
+            text_ops.append(f"({escaped}) Tj")
+        text_ops.append("ET")
+        stream = "\n".join(text_ops).encode("latin-1")
+        content_id = _add_object(
+            b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream"
+        )
+        page_id = _add_object(
+            f"<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 612 842] "
+            f"/Resources << /Font << /F1 {font_id} 0 R >> >> /Contents {content_id} 0 R >>"
+        )
+        page_ids.append(page_id)
+
+    kids = " ".join(f"{page_id} 0 R" for page_id in page_ids)
+    objects[pages_id - 1] = f"<< /Type /Pages /Count {len(page_ids)} /Kids [{kids}] >>".encode("latin-1")
+    objects[catalog_id - 1] = f"<< /Type /Catalog /Pages {pages_id} 0 R >>".encode("latin-1")
+
+    pdf = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for obj_id, obj in enumerate(objects, 1):
+        offsets.append(len(pdf))
+        pdf.extend(f"{obj_id} 0 obj\n".encode("ascii"))
+        pdf.extend(obj)
+        pdf.extend(b"\nendobj\n")
+
+    xref_offset = len(pdf)
+    pdf.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    pdf.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        pdf.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    pdf.extend(
+        (
+            f"trailer\n<< /Size {len(objects) + 1} /Root {catalog_id} 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF"
+        ).encode("ascii")
+    )
+    return bytes(pdf)
+
+
 if load_btn:
     if not video_url.strip():
         st.error("Please enter a YouTube URL.")
@@ -179,6 +414,10 @@ if load_btn:
                 st.session_state.transcript_text = transcript
                 st.session_state.word_count = len(transcript.split())
                 st.session_state.chat_history = []
+                st.session_state.chat_summary_text = None
+                st.session_state.chat_summary_pdf = None
+                st.session_state.study_notes_text = None
+                st.session_state.study_notes_pdf = None
 
                 _compute_related_videos()
 
@@ -251,13 +490,40 @@ if st.session_state.transcript_loaded:
                         "This usually means your Groq API key is invalid, rate-limited, or does not have access to the configured model."
                     )
                     st.code(f"Underlying error: {root_msg}", language="text")
-                    st.info("Re-enter your API key, reload the video, and try the question again.")
+                    st.info("Update the key in your `.env` file, reload the app, and try again.")
                 else:
                     st.error(f"Chat failed: {err}")
             else:
                 st.session_state.chat_history.append((prompt, answer))
+                st.session_state.chat_summary_text = None
+                st.session_state.chat_summary_pdf = None
                 st.markdown("### Answer")
                 st.write(answer)
+
+    st.divider()
+
+    st.subheader("Study Notes")
+    st.caption("Generate revision-ready notes from the loaded transcript.")
+
+    if st.button("Generate Study Notes", use_container_width=True):
+        with st.spinner("Preparing study notes..."):
+            notes_text = _generate_study_notes()
+            st.session_state.study_notes_text = notes_text
+            st.session_state.study_notes_pdf = _build_pdf_bytes(notes_text)
+
+    if st.session_state.study_notes_text and st.session_state.study_notes_pdf:
+        st.text_area(
+            "Study Notes Preview",
+            value=st.session_state.study_notes_text,
+            height=260,
+        )
+        st.download_button(
+            "Download Study Notes as PDF",
+            data=st.session_state.study_notes_pdf,
+            file_name=f"veechat-study-notes-{st.session_state.current_video_id or 'session'}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
 
     if st.session_state.chat_history:
         with st.expander("Chat History", expanded=False):
@@ -265,5 +531,28 @@ if st.session_state.transcript_loaded:
                 st.markdown(f"**Q{i}:** {q}")
                 st.markdown(f"**A{i}:** {a}")
                 st.divider()
+
+        st.subheader("Download Summary")
+        st.caption("Create a one-file PDF summary of this chat session.")
+
+        if st.button("Generate Chat Summary PDF", use_container_width=True):
+            with st.spinner("Preparing chat summary PDF..."):
+                summary_text = _generate_chat_summary()
+                st.session_state.chat_summary_text = summary_text
+                st.session_state.chat_summary_pdf = _build_pdf_bytes(summary_text)
+
+        if st.session_state.chat_summary_text and st.session_state.chat_summary_pdf:
+            st.text_area(
+                "Summary Preview",
+                value=st.session_state.chat_summary_text,
+                height=240,
+            )
+            st.download_button(
+                "Download Summary as PDF",
+                data=st.session_state.chat_summary_pdf,
+                file_name=f"veechat-summary-{st.session_state.current_video_id or 'session'}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
 else:
-    st.info("Enter keys + YouTube URL, then click Load Video.")
+    st.info("Enter a YouTube URL, then click Load Video.")
