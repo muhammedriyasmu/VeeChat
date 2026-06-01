@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from rag_bot import make_bot
-from youtube_utils import safe_fetch_transcript
+from youtube_utils import extract_video_id, safe_fetch_transcript
 from recommend import related_videos_youtube_api, fallback_search_links
 
 load_dotenv()
@@ -71,6 +71,25 @@ youtube_api_key = default_yt
 st.divider()
 
 video_url = st.text_input("Enter YouTube Video URL", placeholder="https://www.youtube.com/watch?v=...")
+manual_transcript = st.text_area(
+    "Manual transcript (optional)",
+    placeholder="Paste the video transcript here if YouTube blocks automatic caption retrieval.",
+    height=140,
+)
+with st.expander("How to use manual transcript", expanded=False):
+    st.markdown(
+        """
+If YouTube blocks automatic transcript access:
+
+1. Open the video on YouTube.
+2. Click the video description / more menu and choose **Show transcript** if available.
+3. Copy the transcript text.
+4. Paste it into the manual transcript box above.
+5. Click **Load Video**.
+
+The app will then answer from your pasted transcript.
+        """
+    )
 
 colA, colB = st.columns([1, 1])
 with colA:
@@ -129,6 +148,15 @@ def _precheck_groq() -> tuple[bool, str]:
         return False, f"Groq pre-check failed: {type(e).__name__}: {e}"
 
 
+def _reset_loaded_video_state() -> None:
+    st.session_state.transcript_loaded = False
+    st.session_state.current_video_url = None
+    st.session_state.current_video_id = None
+    st.session_state.transcript_text = None
+    st.session_state.word_count = 0
+    st.session_state.related_videos = []
+
+
 def _compute_related_videos() -> None:
     text = st.session_state.transcript_text or ""
     url = st.session_state.current_video_url or ""
@@ -149,6 +177,33 @@ def _compute_related_videos() -> None:
             st.session_state.related_videos = fallback_search_links(text, url)
     else:
         st.session_state.related_videos = fallback_search_links(text, url)
+
+
+def _load_transcript(video_id: str, transcript: str) -> None:
+    _build_new_bot()
+
+    with st.spinner("Adding transcript to knowledge base (RAG)..."):
+        st.session_state.app.add(
+            transcript,
+            data_type="text",
+            metadata={"title": "Unknown", "url": video_url, "video_id": video_id},
+        )
+
+    st.session_state.current_video_url = video_url
+    st.session_state.current_video_id = video_id
+    st.session_state.transcript_loaded = True
+    st.session_state.transcript_text = transcript
+    st.session_state.word_count = len(transcript.split())
+    st.session_state.chat_history = []
+    st.session_state.chat_summary_text = None
+    st.session_state.chat_summary_pdf = None
+    st.session_state.study_notes_text = None
+    st.session_state.study_notes_pdf = None
+
+    _compute_related_videos()
+
+    st.success("Video loaded. Ask your questions below.")
+    st.info(f"Transcript words: {st.session_state.word_count}")
 
 
 def _fallback_chat_summary() -> str:
@@ -387,42 +442,31 @@ if load_btn:
             st.stop()
 
         if video_url != st.session_state.current_video_url or not st.session_state.transcript_loaded:
-            with st.spinner("Fetching transcript..."):
-                video_id, transcript = safe_fetch_transcript(video_url)
+            pasted_transcript = manual_transcript.strip()
 
-            if transcript.startswith("No transcript"):
-                st.error("Cannot load this video: No transcript available.")
-                st.session_state.transcript_loaded = False
-                st.session_state.current_video_url = None
-                st.session_state.current_video_id = None
-                st.session_state.transcript_text = None
-                st.session_state.word_count = 0
-                st.session_state.related_videos = []
+            if pasted_transcript:
+                try:
+                    video_id = extract_video_id(video_url)
+                except Exception as e:
+                    st.error(f"Cannot read video URL: {type(e).__name__}: {e}")
+                    _reset_loaded_video_state()
+                else:
+                    _load_transcript(video_id, pasted_transcript)
             else:
-                _build_new_bot()
+                with st.spinner("Fetching transcript..."):
+                    transcript_result = safe_fetch_transcript(video_url)
 
-                with st.spinner("Adding transcript to knowledge base (RAG)..."):
-                    st.session_state.app.add(
-                        transcript,
-                        data_type="text",
-                        metadata={"title": "Unknown", "url": video_url, "video_id": video_id},
-                    )
-
-                st.session_state.current_video_url = video_url
-                st.session_state.current_video_id = video_id
-                st.session_state.transcript_loaded = True
-                st.session_state.transcript_text = transcript
-                st.session_state.word_count = len(transcript.split())
-                st.session_state.chat_history = []
-                st.session_state.chat_summary_text = None
-                st.session_state.chat_summary_pdf = None
-                st.session_state.study_notes_text = None
-                st.session_state.study_notes_pdf = None
-
-                _compute_related_videos()
-
-                st.success("Video loaded. Ask your questions below.")
-                st.info(f"Transcript words: {st.session_state.word_count}")
+                if transcript_result.ok:
+                    _load_transcript(transcript_result.video_id, transcript_result.text)
+                else:
+                    if transcript_result.status == "blocked":
+                        st.warning(transcript_result.message)
+                    elif transcript_result.status == "missing":
+                        st.error("Cannot load this video: No transcript available.")
+                        st.caption(transcript_result.message)
+                    else:
+                        st.error(transcript_result.message)
+                    _reset_loaded_video_state()
         else:
             st.info("This video is already loaded. Ask your questions below.")
 

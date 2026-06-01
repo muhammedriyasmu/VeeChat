@@ -18,6 +18,21 @@ STOPWORDS = {
     "where", "there", "their", "have", "has", "had", "more", "most", "very",
 }
 
+OVERVIEW_TERMS = {
+    "summary", "summarize", "explain", "overview", "key", "points", "main", "idea",
+    "ideas", "notes", "important", "takeaways", "takeaway", "theme", "themes",
+}
+
+QUERY_EXPANSIONS = {
+    "write": {"author", "poet", "written", "writer", "compose", "composed"},
+    "writer": {"author", "poet", "write", "written"},
+    "author": {"writer", "poet", "write", "written"},
+    "poem": {"poetry", "poet", "verse"},
+    "explain": {"meaning", "summary", "idea", "theme"},
+    "point": {"idea", "topic", "takeaway", "summary"},
+    "key": {"main", "important"},
+}
+
 
 class SimpleRAGBot:
     def __init__(self, api_key: str, model: str = "llama-3.1-8b-instant") -> None:
@@ -42,14 +57,15 @@ class SimpleRAGBot:
             )
 
         user_msg = (
-            "Answer the question using only the transcript context below.\n"
+            "Answer the question using only the word-matched transcript context below.\n"
             "Rules:\n"
             "1. Do not use outside knowledge.\n"
             "2. If the transcript does not clearly support the answer, say: "
             "\"I could not verify that from the transcript.\"\n"
-            "3. Keep the answer accurate, concise, and grounded in the provided context.\n"
-            "4. When possible, include a short supporting quote or paraphrase from the transcript.\n\n"
-            f"Transcript context:\n{context}\n\nQuestion: {prompt}"
+            "3. If the question asks for explanation, summary, or key points, summarize the matched context.\n"
+            "4. Keep the answer accurate, concise, and grounded in the provided context.\n"
+            "5. When possible, include a short supporting quote or paraphrase from the transcript.\n\n"
+            f"Word-matched transcript context:\n{context}\n\nQuestion: {prompt}"
         )
 
         resp = self.client.chat.completions.create(
@@ -90,25 +106,88 @@ class SimpleRAGBot:
         if not q_terms:
             return "\n\n".join(c.text for c in self.chunks[:k])
 
-        scored: list[tuple[int, int, str]] = []
-        for c in self.chunks:
-            c_terms = self._extract_terms(c.text)
-            overlap = q_terms & c_terms
-            overlap_score = len(overlap)
-            phrase_bonus = 3 if query.lower() in c.text.lower() else 0
-            score = overlap_score + phrase_bonus
-            scored.append((score, overlap_score, c.text))
+        if q_terms <= OVERVIEW_TERMS:
+            return "\n\n".join(c.text for c in self.chunks[:k])
 
-        scored.sort(key=lambda x: (x[0], x[1], len(x[2])), reverse=True)
-        top = [text for score, overlap_score, text in scored[:k] if score > 0 and overlap_score > 0]
-        if not top:
+        expanded_terms = self._expand_terms(q_terms)
+        matched_sentences = self._word_match_sentences(query, expanded_terms, limit=k * 3)
+        if matched_sentences:
+            return "\n".join(f"- {sentence}" for sentence in matched_sentences)
+
+        matched_chunks = self._word_match_chunks(query, expanded_terms, limit=k)
+        if not matched_chunks:
+            if len(q_terms) <= 3:
+                return "\n\n".join(c.text for c in self.chunks[:k])
             return ""
-        return "\n\n".join(top)
+        return "\n\n".join(matched_chunks)
 
     @staticmethod
     def _extract_terms(text: str) -> set[str]:
         words = re.findall(r"[a-zA-Z0-9]{3,}", (text or "").lower())
-        return {word for word in words if word not in STOPWORDS}
+        return {SimpleRAGBot._normalize_word(word) for word in words if word not in STOPWORDS}
+
+    @staticmethod
+    def _normalize_word(word: str) -> str:
+        word = word.lower()
+        for suffix in ("ingly", "edly", "ing", "ed", "es", "s"):
+            if len(word) > len(suffix) + 3 and word.endswith(suffix):
+                return word[: -len(suffix)]
+        return word
+
+    @staticmethod
+    def _expand_terms(terms: set[str]) -> set[str]:
+        expanded = set(terms)
+        for term in terms:
+            expanded.update(SimpleRAGBot._normalize_word(t) for t in QUERY_EXPANSIONS.get(term, set()))
+        return expanded
+
+    @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+        return [s.strip() for s in sentences if s.strip()]
+
+    def _word_match_sentences(self, query: str, q_terms: set[str], limit: int = 18) -> list[str]:
+        scored: list[tuple[int, int, str]] = []
+        query_text = query.lower().strip()
+
+        for chunk in self.chunks:
+            for sentence in self._split_sentences(chunk.text):
+                sentence_terms = self._extract_terms(sentence)
+                overlap = q_terms & sentence_terms
+                if not overlap:
+                    continue
+                phrase_bonus = 3 if query_text and query_text in sentence.lower() else 0
+                score = len(overlap) * 2 + phrase_bonus
+                scored.append((score, len(overlap), sentence))
+
+        scored.sort(key=lambda item: (item[0], item[1], len(item[2])), reverse=True)
+
+        selected = []
+        seen = set()
+        for _, _, sentence in scored:
+            key = sentence.lower()
+            if key in seen:
+                continue
+            selected.append(sentence)
+            seen.add(key)
+            if len(selected) >= limit:
+                break
+        return selected
+
+    def _word_match_chunks(self, query: str, q_terms: set[str], limit: int = 6) -> list[str]:
+        scored: list[tuple[int, int, str]] = []
+        query_text = query.lower().strip()
+
+        for chunk in self.chunks:
+            chunk_terms = self._extract_terms(chunk.text)
+            overlap = q_terms & chunk_terms
+            overlap_score = len(overlap)
+            phrase_bonus = 3 if query_text and query_text in chunk.text.lower() else 0
+            score = overlap_score * 2 + phrase_bonus
+            scored.append((score, overlap_score, chunk.text))
+
+        scored.sort(key=lambda item: (item[0], item[1], len(item[2])), reverse=True)
+        return [text for score, overlap_score, text in scored[:limit] if score > 0 and overlap_score > 0]
 
 
 def make_bot(db_path: str, groq_key: str) -> SimpleRAGBot:
